@@ -1,13 +1,6 @@
 ﻿using System;
-using System.IO;
-using System.Runtime.InteropServices;
-using Android.Content;
-using Android.Graphics;
 using Android.Media;
-using Android.Renderscripts;
-using ApxLabs.FastAndroidCamera;
-
-using Java.IO;
+using Java.Lang;
 using Java.Nio;
 using static Android.Media.ImageReader;
 
@@ -15,6 +8,7 @@ namespace ZXing.Mobile.CameraAccess
 {
     public class CameraEventsListener : Java.Lang.Object, IOnImageAvailableListener
     {
+
         public event EventHandler<byte[]> OnPreviewFrameReady;
 
         public void OnImageAvailable(ImageReader reader)
@@ -22,19 +16,14 @@ namespace ZXing.Mobile.CameraAccess
             Image image = null;
             try
             {
-                //Returns a yuv420888 image
                 image = reader.AcquireLatestImage();
 
                 if (image is null) return;
 
-                //On Pixel5, the original Yuv42088 to nv21 conversion fails
-                //var yuvBytes = ImageToByteArray(image);
                 var yuvBytes = Yuv420888toNv21(image);
-
+                yuvBytes = rotateNV21(yuvBytes, image.Width, image.Height, 90);
                 OnPreviewFrameReady?.Invoke(this, yuvBytes);
 
-                //To check that the yuv conversion is correct, you can save a jpg version
-                //SaveJpegBytes(yuvBytes, image.Width, image.Height);
             }
             finally
             {
@@ -42,20 +31,52 @@ namespace ZXing.Mobile.CameraAccess
             }
         }
 
-        //Use this to save the converted yuv image to external storage
-        //You may need to include Permissions.StorageWrite in PermissionsHandler.android.cs and in the manifest
-        //void SaveJpegBytes(byte[] yuvBytes, int width, int height)
-        //{
-        //    var dcimDir = Android.OS.Environment.GetExternalStoragePublicDirectory(Android.OS.Environment.DirectoryDcim).AbsolutePath;
-        //    var filename = System.IO.Path.Combine(dcimDir, $"nv21-output.jpg");
 
-        //    //Convert the nv21 bytes to a jpeg
-        //    var stream = new MemoryStream();
-        //    var yuvImage = new YuvImage(yuvBytes, ImageFormatType.Nv21, width, height, null);
-        //    yuvImage.CompressToJpeg(new Rect(0, 0, width, height), 50, stream);
+        // rotation from https://stackoverflow.com/questions/44994510/how-to-convert-rotate-raw-nv21-array-image-android-media-image-from-front-ca
+        public static byte[] rotateNV21(byte[] yuv,
+                                int width,
+                                int height,
+                                int rotation)
+        {
+            if (rotation == 0)
+                return yuv;
+            if (rotation % 90 != 0 || rotation < 0 || rotation > 270)
+            {
+                throw new IllegalArgumentException("0 <= rotation < 360, rotation % 90 == 0");
+            }
 
-        //    System.IO.File.WriteAllBytes(filename, stream.ToArray());
-        //}
+            var output = new byte[yuv.Length];
+            var frameSize = width * height;
+            var swap = rotation % 180 != 0;
+            var xflip = rotation % 270 != 0;
+            var yflip = rotation >= 180;
+
+            for (var j = 0; j < height; j++)
+            {
+                for (var i = 0; i < width; i++)
+                {
+                    var yIn = j * width + i;
+                    var uIn = frameSize + (j >> 1) * width + (i & ~1);
+                    var vIn = uIn + 1;
+
+                    var wOut = swap ? height : width;
+                    var hOut = swap ? width : height;
+                    var iSwapped = swap ? j : i;
+                    var jSwapped = swap ? i : j;
+                    var iOut = xflip ? wOut - iSwapped - 1 : iSwapped;
+                    var jOut = yflip ? hOut - jSwapped - 1 : jSwapped;
+
+                    var yOut = jOut * wOut + iOut;
+                    var uOut = frameSize + (jOut >> 1) * wOut + (iOut & ~1);
+                    var vOut = uOut + 1;
+
+                    output[yOut] = (byte)(0xff & yuv[yIn]);
+                    output[uOut] = (byte)(0xff & yuv[uIn]);
+                    output[vOut] = (byte)(0xff & yuv[vIn]);
+                }
+            }
+            return output;
+        }
 
         //https://stackoverflow.com/questions/52726002/camera2-captured-picture-conversion-from-yuv-420-888-to-nv21
         byte[] Yuv420888toNv21(Image image)
@@ -135,27 +156,6 @@ namespace ZXing.Mobile.CameraAccess
             }
 
             return nv21;
-        }
-
-        //Convert to NV21
-        byte[] ImageToByteArray(Image image)
-        {
-            byte[] result;
-            var yBuffer = image.GetPlanes()[0].Buffer;
-            var uBuffer = image.GetPlanes()[1].Buffer;
-            var vBuffer = image.GetPlanes()[2].Buffer;
-
-            var ySize = yBuffer.Remaining();
-            var uSize = uBuffer.Remaining();
-            var vSize = vBuffer.Remaining();
-
-            result = new byte[ySize + uSize + vSize];
-
-            yBuffer.Get(result, 0, ySize);
-            vBuffer.Get(result, ySize, vSize);
-            uBuffer.Get(result, ySize + vSize, uSize);
-
-            return result;
         }
     }
 }
